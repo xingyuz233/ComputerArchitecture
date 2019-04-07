@@ -100,41 +100,16 @@ sim_init(void)
   /* initialize stage latches*/
  
   /* IF/ID */
-  fd.inst.a = NOP;
-  fd.PC = 0;
-  fd.NPC = 0;
+  init_fd();
 
   /* ID/EX */
-  de.latched = 0;
-  de.inst.a = NOP;
-  de.PC = 0;
-
-  de.Jump = 0;
-
-  de.MemWrite = 0;
-  de.MemRead = 0;
-  de.Branch = 0;
-
-  de.MemtoReg = 0;
-  de.RegWrite = 0;
+  init_de();
 
   /* EX/MEM */
-  em.inst.a = NOP;
-  em.PC = 0;
-
-  em.MemWrite = 0;
-  em.MemRead = 0;
-  em.Branch = 0;
-
-  em.MemtoReg = 0;
-  em.RegWrite = 0;
+  init_em();
 
   /* MEM/WB */
-  mw.inst.a = NOP;
-  mw.PC = 0;
-
-  mw.MemtoReg = 0;
-  mw.RegWrite = 0;
+  init_mw();
 
 }
 
@@ -247,20 +222,20 @@ sim_main(void)
   /* maintain $r0 semantics */
   regs.regs_R[MD_REG_ZERO] = 0;
  
-  memory_dump();
+  fd.PC = regs.regs_PC - sizeof(md_inst_t);
 
   while (TRUE)
   {
 	  /*start your pipeline simulation here*/
     sim_num_insn++;
-
+    stall_check_without_forwarding();
     do_wb();
     do_mem();
     do_ex();
     do_id();
     do_if();
     pipeline_dump();
-    if (sim_num_insn >= 1) {
+    if (sim_num_insn >= 320) {
       break;
     }
   }
@@ -272,11 +247,11 @@ void do_if()
   md_inst_t instruction;
   md_addr_t jump_addr;
   int PCSrc;
-  jump_addr = de.PC + de.ext_imm << 2;
-  PCSrc = em.alu_zero & em.Branch;
+  PCSrc = !em.alu_zero & em.Branch;
   if (de.Jump) {
-    fd.NPC = jump_addr;
-  } else if (PCSrc == 1){
+    printf("de pc: %x\nj addr: %x\n", de.PC, jump_addr);
+    fd.NPC = de.jump_target;
+  } else if (PCSrc){
   	fd.NPC = em.branch_address;
   } else{
   	fd.NPC = fd.PC + sizeof(md_inst_t);
@@ -290,6 +265,14 @@ void do_if()
 void do_id()
 {
     de.inst = fd.inst;
+
+    // flush(control harzard)
+    if (em.alu_zero & em.Branch) {
+      init_de();
+    }
+
+
+
     if (de.inst.a == NOP) {
       return;
     }
@@ -312,6 +295,16 @@ void do_id()
 
 READ_OPRAND_VALUE:
   switch(de.opcode){
+    case NOP:
+      de.Jump = 0;
+
+      de.MemWrite = 0;
+      de.MemRead = 0;
+      de.Branch = 0;
+
+      de.MemtoReg = 0;
+      de.RegWrite = 1;
+      break;
     case ADD:
     case ADDU:
       de.RegDst = REGDST_RD;
@@ -481,6 +474,16 @@ READ_OPRAND_VALUE:
   de.read_data_2 = GPR(de.register_rt);
   de.ext_imm = IMM;
   de.shamt = SHAMT;
+
+  de.jump_target = (de.PC & 0xf0000000) + (TARG << 2);
+
+  if (mw.RegWrite) {
+    if (mw.MemtoReg) {
+      SET_GPR(mw.write_register, mw.alu_result);
+    } else {
+      SET_GPR(mw.write_register, mw.read_data);
+    }
+  }
   
 }
 
@@ -488,9 +491,7 @@ void do_ex()
 {
   em.inst = de.inst;
   // my code
-  if (em.inst.a == NOP) {
-    return;
-  }
+  em.oprand = de.oprand;
   em.PC = de.PC;
 
   em.Branch = de.Branch;
@@ -500,7 +501,7 @@ void do_ex()
   em.MemtoReg = de.MemtoReg;
   em.RegWrite = de.RegWrite;
 
-  em.branch_address = de.PC + de.ext_imm << 2;
+  em.branch_address = de.PC + (de.ext_imm << 2);
 
   int srcA;
   int srcB;
@@ -578,12 +579,11 @@ void do_mem()
   enum md_fault_type _fault;
   mw.inst = em.inst;
   // my code
-  if (em.inst.a == NOP) {
-    return;
-  }
+  mw.oprand = em.oprand;
   mw.PC = em.PC;
 
-
+  mw.RegWrite = em.RegWrite;
+  mw.MemtoReg = em.MemtoReg;
 
   if (em.MemRead) {
     mw.read_data = READ_WORD(em.alu_result, _fault);
@@ -596,12 +596,10 @@ void do_mem()
 void do_wb()
 {
 	// my code
-  wb.inst = em.inst;
-  wb.PC = em.PC;
+  wb.inst = mw.inst;
+  wb.PC = mw.PC;
 
-  if (wb.inst.a == NOP) {
-    return;
-  }
+  
   if (wb.inst.a == SYSCALL) {
     printf("Loop terminated. Result=%d\n",GPR(6));
     SET_GPR(2,SS_SYS_exit);
@@ -617,14 +615,66 @@ void pipeline_dump() {
 	printf("[EX]  ");md_print_insn(em.inst, em.PC, stdout);printf("\n");
 	printf("[MEM] ");md_print_insn(mw.inst, mw.PC, stdout);printf("\n");
 	printf("[WB]  ");md_print_insn(wb.inst, wb.PC, stdout);printf("\n");
-	printf("[REGS]r2=%d r3=%d r4=%d r5=%d r6=%d mem = %d\n", 
-			GPR(2),GPR(3),GPR(4),GPR(5),GPR(6),(int)READ_WORD(GPR(30)+16, _fault));
+	printf("[REGS]r0=%d r1=%d r2=%d r3=%d r4=%d r5=%d r6=%d mem = %d\n", 
+			GPR(0),GPR(1),GPR(2),GPR(3),GPR(4),GPR(5),GPR(6),(int)READ_WORD(GPR(30)+16, _fault));
 	printf("----------------------------------------------\n");
 }
 
-void memory_dump() {
-  int pc;
-  for (pc = 0; pc <= 200; pc += 4) {
-    printf("%x\n", MEM_READ_WORD(mem, pc));
-  }
+
+void init_fd() {
+  fd.inst.a = NOP;
 }
+
+
+void init_de() {
+  
+  de.latched = 0;
+  de.inst.a = NOP;
+
+  de.RegDst = REGDST_RT;
+  de.ALUSrcA = ALUSRCA_RS;
+  de.ALUSrcB = ALUSRCB_RT;
+  de.ALUOp = ALU_NOP;
+
+  de.Jump = 0;
+
+  de.MemWrite = 0;
+  de.MemRead = 0;
+  de.Branch = 0;
+
+  de.MemtoReg = 0;
+  de.RegWrite = 0;
+}
+
+void init_em() {
+  em.inst.a = NOP;
+
+  em.MemWrite = 0;
+  em.MemRead = 0;
+  em.Branch = 0;
+
+  em.MemtoReg = 0;
+  em.RegWrite = 0;
+}
+
+void init_mw() {
+  mw.inst.a = NOP;
+  mw.PC = 0;
+
+  mw.MemtoReg = 0;
+  mw.RegWrite = 0;
+}
+
+void stall_check_without_forwarding() {
+  if((em.RegWrite == 1 && (em.inst.a != NOP && em.oprand.out1 != DNA 
+		&& (em.oprand.out1 == de.oprand.in1 || em.oprand.out1 == de.oprand.in2)))
+		||(mw.RegWrite == 1 && (mw.inst.a != NOP && mw.oprand.out1 != DNA
+		&& (mw.oprand.out1 == de.oprand.in1 || mw.oprand.out1 == de.oprand.in2))))
+	{
+		fd.inst = de.inst;
+		fd.PC = de.PC;
+    init_de();
+	}
+}
+
+

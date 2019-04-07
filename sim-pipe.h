@@ -57,8 +57,10 @@ struct idex_buf {
   oprand_t oprand;		/* operand */
   // My code
   md_addr_t PC;
+  md_addr_t jump_target;
   int instFlags;
   int latched;
+
 
   int read_data_1;
   int read_data_2;
@@ -89,7 +91,9 @@ struct idex_buf {
 struct exmem_buf{
   md_inst_t inst;		/* instruction in EX stage */
   // My code
+  oprand_t oprand;
   md_addr_t PC;
+
   
   md_addr_t branch_address;
   int alu_zero;
@@ -111,6 +115,7 @@ struct exmem_buf{
 struct memwb_buf{
   md_inst_t inst;		/* instruction in MEM stage */
   // My code
+  oprand_t oprand;
   md_addr_t PC;
 
   int read_data;
@@ -127,6 +132,13 @@ struct wb_buf {
   md_inst_t inst;
   md_addr_t PC;
 };
+
+/* the gate for hazard detection */
+struct harzard_detection_unit {
+  int control_harzard;
+  int data_harzard;
+};
+
 
 /*do fetch stage*/
 void do_if();
@@ -146,6 +158,14 @@ void do_wb();
 /*dump the pipeline*/
 void pipeline_dump();
 
+/* */
+
+void init_fd();
+void init_de();
+void init_em();
+void init_mw();
+
+void stall_check_without_forwarding();
 
 #define MD_FETCH_INSTI(INST, MEM, PC)					\
   { INST.a = MEM_READ_WORD(mem, (PC));					\
