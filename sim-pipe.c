@@ -69,6 +69,9 @@ struct exmem_buf em;
 struct memwb_buf mw;
 struct wb_buf wb;
 
+void stall_check_without_forwarding();
+
+
 #define DNA			(-1)
 
 /* general register dependence decoders */
@@ -235,9 +238,6 @@ sim_main(void)
     do_id();
     do_if();
     pipeline_dump();
-    if (sim_num_insn >= 320) {
-      break;
-    }
   }
 }
 
@@ -248,11 +248,10 @@ void do_if()
   md_addr_t jump_addr;
   int PCSrc;
   PCSrc = !em.alu_zero & em.Branch;
-  if (de.Jump) {
-    printf("de pc: %x\nj addr: %x\n", de.PC, jump_addr);
-    fd.NPC = de.jump_target;
-  } else if (PCSrc){
+  if (PCSrc) {
   	fd.NPC = em.branch_address;
+  } else if (de.Jump){
+    fd.NPC = de.jump_target;
   } else{
   	fd.NPC = fd.PC + sizeof(md_inst_t);
   }
@@ -266,16 +265,6 @@ void do_id()
 {
     de.inst = fd.inst;
 
-    // flush(control harzard)
-    if (em.alu_zero & em.Branch) {
-      init_de();
-    }
-
-
-
-    if (de.inst.a == NOP) {
-      return;
-    }
     MD_SET_OPCODE(de.opcode, de.inst);
     de.PC = fd.PC;
     md_inst_t inst = de.inst;
@@ -303,7 +292,7 @@ READ_OPRAND_VALUE:
       de.Branch = 0;
 
       de.MemtoReg = 0;
-      de.RegWrite = 1;
+      de.RegWrite = 0;
       break;
     case ADD:
     case ADDU:
@@ -408,7 +397,7 @@ READ_OPRAND_VALUE:
       break;
     case LW:
       de.RegDst = REGDST_RT;
-      de.ALUSrcA = ALUSRCA_UP_RS;
+      de.ALUSrcA = ALUSRCA_RS;
       de.ALUSrcB = ALUSRCB_EX_IMM;
       de.ALUOp = ALU_ADD;
       de.Jump = 0;
@@ -437,7 +426,7 @@ READ_OPRAND_VALUE:
       break;
     
     case SW:
-      de.ALUSrcA = ALUSRCA_UP_RS;
+      de.ALUSrcA = ALUSRCA_RS;
       de.ALUSrcB = ALUSRCB_EX_IMM;
       de.ALUOp = ALU_ADD;
       de.Jump = 0;
@@ -477,13 +466,7 @@ READ_OPRAND_VALUE:
 
   de.jump_target = (de.PC & 0xf0000000) + (TARG << 2);
 
-  if (mw.RegWrite) {
-    if (mw.MemtoReg) {
-      SET_GPR(mw.write_register, mw.alu_result);
-    } else {
-      SET_GPR(mw.write_register, mw.read_data);
-    }
-  }
+  
   
 }
 
@@ -501,7 +484,7 @@ void do_ex()
   em.MemtoReg = de.MemtoReg;
   em.RegWrite = de.RegWrite;
 
-  em.branch_address = de.PC + (de.ext_imm << 2);
+  em.branch_address = de.PC + sizeof(md_inst_t) + (de.ext_imm << 2);
 
   int srcA;
   int srcB;
@@ -590,6 +573,9 @@ void do_mem()
   } else if (em.MemWrite) {
     WRITE_WORD(em.write_data, em.alu_result, _fault);
   }
+
+  mw.write_register = em.write_register;
+  mw.alu_result = em.alu_result;
   
 }                                                                                        
 
@@ -601,22 +587,27 @@ void do_wb()
 
   
   if (wb.inst.a == SYSCALL) {
-    printf("Loop terminated. Result=%d\n",GPR(6));
     SET_GPR(2,SS_SYS_exit);
     SYSCALL(wb.inst);
-  } 
+  } else if (mw.RegWrite) {
+    if (mw.MemtoReg) {
+      SET_GPR(mw.write_register, mw.read_data);
+    } else {
+      SET_GPR(mw.write_register, mw.alu_result);
+    }
+  }
 }
 
 void pipeline_dump() {
   enum md_fault_type _fault;
-	printf("[Cycle %5d]---------------------------------\n",(int)sim_num_insn);
+	printf("[Cycle %d]---------------------------------\n",(int)sim_num_insn);
 	printf("[IF]  ");md_print_insn(fd.inst, fd.PC, stdout);printf("\n");
 	printf("[ID]  ");md_print_insn(de.inst, de.PC, stdout);printf("\n");
 	printf("[EX]  ");md_print_insn(em.inst, em.PC, stdout);printf("\n");
 	printf("[MEM] ");md_print_insn(mw.inst, mw.PC, stdout);printf("\n");
 	printf("[WB]  ");md_print_insn(wb.inst, wb.PC, stdout);printf("\n");
-	printf("[REGS]r0=%d r1=%d r2=%d r3=%d r4=%d r5=%d r6=%d mem = %d\n", 
-			GPR(0),GPR(1),GPR(2),GPR(3),GPR(4),GPR(5),GPR(6),(int)READ_WORD(GPR(30)+16, _fault));
+	printf("[REGS] r2=%d r3=%d r4=%d r5=%d r6=%d mem=%d\n", 
+			GPR(2),GPR(3),GPR(4),GPR(5),GPR(6),(int)READ_WORD(GPR(30)+16, _fault));
 	printf("----------------------------------------------\n");
 }
 
@@ -666,6 +657,14 @@ void init_mw() {
 }
 
 void stall_check_without_forwarding() {
+  // control harzard
+  if (de.Branch) {
+    fd.PC = de.PC;
+    init_fd();
+
+  }
+
+  // data harzard
   if((em.RegWrite == 1 && (em.inst.a != NOP && em.oprand.out1 != DNA 
 		&& (em.oprand.out1 == de.oprand.in1 || em.oprand.out1 == de.oprand.in2)))
 		||(mw.RegWrite == 1 && (mw.inst.a != NOP && mw.oprand.out1 != DNA

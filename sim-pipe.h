@@ -165,7 +165,6 @@ void init_de();
 void init_em();
 void init_mw();
 
-void stall_check_without_forwarding();
 
 #define MD_FETCH_INSTI(INST, MEM, PC)					\
   { INST.a = MEM_READ_WORD(mem, (PC));					\
