@@ -98,4 +98,5 @@ With forwarding and branch prediction, hazards will be decreased and our stall s
 
 This pipeline support all the instructions in loop.s.
 
-For detailed information, see [inst_list](./inst_list.md)
+For detailed information, see [inst_list](./inst.md)
+
