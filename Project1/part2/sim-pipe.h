@@ -131,13 +131,15 @@ struct memwb_buf{
 struct wb_buf {
   md_inst_t inst;
   md_addr_t PC;
+  oprand_t oprand;
+
+  int MemtoReg;
+  int RegWrite;
+
+  int alu_result;
+  int read_data;
 };
 
-/* the gate for hazard detection */
-struct harzard_detection_unit {
-  int control_harzard;
-  int data_harzard;
-};
 
 
 /*do fetch stage*/
