@@ -2,4 +2,5 @@
 
 ### catalog
 
-* [Project1](./Project1/README.md)
+* [Project1](./Project1/)
+
